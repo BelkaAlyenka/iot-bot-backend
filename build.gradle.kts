@@ -22,6 +22,7 @@ dependencies {
     implementation(ktorLibs.server.netty)
     implementation(libs.logback.classic)
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+    implementation("io.ktor:ktor-server-websockets:3.6.1")
 
     testImplementation(kotlin("test"))
     testImplementation(ktorLibs.server.testHost)
