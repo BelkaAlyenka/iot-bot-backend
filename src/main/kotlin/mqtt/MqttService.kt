@@ -1,11 +1,13 @@
 package io.github.belkaalyenka.mqtt
 
+import io.github.belkaalyenka.audio.AudioCollector
 import io.github.belkaalyenka.ws.WebSocketHub
 import io.github.belkaalyenka.ws.event.ButtonPressedEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.eclipse.paho.client.mqttv3.*
@@ -22,11 +24,14 @@ object MqttService {
     private const val TOPIC_PREFIX = "iot_bot_demo_7842"
     private const val TOPIC_LED = "$TOPIC_PREFIX/led"
     private const val TOPIC_BUTTON = "$TOPIC_PREFIX/button"
+    private const val TOPIC_AUDIO_META = "$TOPIC_PREFIX/audio/meta"
+    private const val TOPIC_AUDIO_DATA = "$TOPIC_PREFIX/audio/data"
 
     private val clientId = MqttClient.generateClientId()
     private lateinit var client: MqttClient
 
-    private val eventChannel = Channel<Pair<String, String>>(Channel.UNLIMITED)
+    // Канал теперь передаёт сырые байты (ByteArray), чтобы не портить бинарное аудио
+    private val eventChannel = Channel<Pair<String, ByteArray>>(Channel.UNLIMITED)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     fun start() {
@@ -46,10 +51,10 @@ object MqttService {
             }
 
             override fun messageArrived(topic: String?, message: MqttMessage?) {
-                val payload = message?.payload?.toString(Charsets.UTF_8) ?: return
+                val payload = message?.payload ?: return // сырые байты, без конвертации в String!
                 if (topic == null) return
 
-                logger.debug("📩 MQTT [$topic]: $payload")
+                logger.debug("📩 MQTT [$topic]: ${payload.size} байт")
                 eventChannel.trySend(topic to payload)
             }
 
@@ -85,31 +90,47 @@ object MqttService {
         }
     }
 
-    private suspend fun handleMqttMessage(topic: String, payload: String) {
+    private suspend fun handleMqttMessage(topic: String, payload: ByteArray) {
         try {
             when (topic) {
                 TOPIC_BUTTON -> {
-                    val jsonElement = Json.parseToJsonElement(payload)
-                    val device = jsonElement.jsonObject["device"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+                    val text = String(payload, Charsets.UTF_8) // строка только для JSON!
+                    val device = Json.parseToJsonElement(text).jsonObject["device"]
+                        ?.jsonPrimitive?.contentOrNull ?: "unknown"
 
-                    val event = ButtonPressedEvent(device = device)
                     logger.info("🎯 Кнопка нажата на устройстве: $device")
-
-                    WebSocketHub.broadcast(event)
+                    WebSocketHub.broadcast(ButtonPressedEvent(device = device))
                 }
+
+                TOPIC_AUDIO_META -> {
+                    val text = String(payload, Charsets.UTF_8)
+                    val json = Json.parseToJsonElement(text).jsonObject
+                    when (json["type"]?.jsonPrimitive?.contentOrNull) {
+                        "start" -> AudioCollector.onStart(
+                            json["rate"]?.jsonPrimitive?.intOrNull ?: 16000
+                        )
+                        "end" -> AudioCollector.onEnd()
+                        else -> logger.warn("⚠️ Неизвестный тип meta-сообщения: $text")
+                    }
+                }
+
+                TOPIC_AUDIO_DATA -> AudioCollector.onData(payload) // байты идут как есть
+
                 else -> logger.debug("Неизвестный топик: $topic")
             }
         } catch (e: Exception) {
-            logger.warn("⚠️ Не удалось обработать MQTT-сообщение [$payload]: ${e.message}")
+            logger.warn("⚠️ Не удалось обработать MQTT-сообщение [$topic]: ${e.message}")
         }
     }
 
     private fun subscribeToTopics() {
         try {
             client.subscribe(TOPIC_BUTTON, 1)
-            logger.info("📡 Подписались на топик: $TOPIC_BUTTON")
+            client.subscribe(TOPIC_AUDIO_META, 1)
+            client.subscribe(TOPIC_AUDIO_DATA, 1)
+            logger.info("📡 Подписались на: $TOPIC_BUTTON, $TOPIC_AUDIO_META, $TOPIC_AUDIO_DATA")
         } catch (e: MqttException) {
-            logger.error("❌ Ошибка подписки на топик $TOPIC_BUTTON: ${e.message}")
+            logger.error("❌ Ошибка подписки: ${e.message}")
         }
     }
 
