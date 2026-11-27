@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Пульт (Слой 2)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        h1 { text-align: center; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        #status { text-align: center; font-weight: bold; padding: 10px; border-radius: 8px; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .btn-group { display: flex; gap: 10px; }
+        button { flex: 1; padding: 15px; font-size: 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: transform 0.1s, opacity 0.2s; }
+        button:active { transform: scale(0.98); }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-on { background: #28a745; color: white; }
+        .btn-off { background: #dc3545; color: white; }
+        #events { list-style: none; padding: 0; margin: 0; max-height: 300px; overflow-y: auto; }
+        #events li { padding: 10px; border-bottom: 1px solid #eee; animation: fadeIn 0.3s; display: flex; justify-content: space-between; align-items: center; }
+        .time { font-size: 12px; color: #666; margin-left: 10px; white-space: nowrap; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .event-btn { background: #e2e3e5; }
+        .event-led { background: #fff3cd; }
+        .event-err { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+<h1>🎛️ Пульт управления</h1>
+
+<div class="card">
+    <div id="status" class="disconnected">Подключение...</div>
+</div>
+
+<div class="card">
+    <h3>Управление LED (ESP32)</h3>
+    <div class="btn-group">
+        <button id="btnOn" class="btn-on" onclick="sendLed('on')">ВКЛЮЧИТЬ</button>
+        <button id="btnOff" class="btn-off" onclick="sendLed('off')">ВЫКЛЮЧИТЬ</button>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Лог событий (Real-time)</h3>
+    <ul id="events"></ul>
+</div>
+
+<script>
+    const statusEl = document.getElementById('status');
+    const eventsList = document.getElementById('events');
+    let ws = null;
+
+    function addLogItem(text, className = '', timestamp = Date.now()) {
+        const li = document.createElement('li');
+        if (className) li.className = className;
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = text;
+
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'time';
+        timeSpan.textContent = new Date(timestamp).toLocaleTimeString();
+
+        li.appendChild(textSpan);
+        li.appendChild(timeSpan);
+        eventsList.prepend(li);
+
+        while (eventsList.children.length > 20) {
+            eventsList.lastChild.remove();
+        }
+    }
+
+    function connectWs() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/status`);
+
+        ws.onopen = () => {
+            statusEl.textContent = '✅ Подключено к серверу';
+            statusEl.className = 'connected';
+        };
+
+        ws.onclose = () => {
+            statusEl.textContent = '❌ Соединение потеряно. Переподключение через 3с...';
+            statusEl.className = 'disconnected';
+            setTimeout(connectWs, 3000);
+        };
+
+        ws.onerror = () => {
+            ws.close();
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                const ts = data.timestamp || Date.now();
+
+                if (data.type === 'BUTTON_PRESSED') {
+                    addLogItem(`🔘 Кнопка нажата (Устройство: ${data.device})`, 'event-btn', ts);
+                } else if (data.type === 'LED_STATE') {
+                    addLogItem(`💡 Подтверждение LED: ${data.state.toUpperCase()}`, 'event-led', ts);
+                } else if (data.type === 'SERVER_MESSAGE') {
+                    addLogItem(`ℹ️ [${data.level}] ${data.message}`, '', ts);
+                } else {
+                    addLogItem(`📩 ${JSON.stringify(data)}`, '', ts);
+                }
+            } catch (e) {
+                console.error('Ошибка парсинга WS-сообщения:', e);
+            }
+        };
+    }
+
+    async function sendLed(state) {
+        const btnOn = document.getElementById('btnOn');
+        const btnOff = document.getElementById('btnOff');
+        btnOn.disabled = true;
+        btnOff.disabled = true;
+
+        try {
+            const response = await fetch('/api/led', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ state: state })
+            });
+
+            const result = await response.json();
+            if (!response.ok) {
+                addLogItem(`⚠️ Ошибка сервера: ${result.error || response.statusText}`, 'event-err');
+            }
+        } catch (err) {
+            addLogItem('⚠️ Ошибка сети при отправке команды', 'event-err');
+        } finally {
+            btnOn.disabled = false;
+            btnOff.disabled = false;
+        }
+    }
+
+    connectWs();
+</script>
+</body>
+</html>
